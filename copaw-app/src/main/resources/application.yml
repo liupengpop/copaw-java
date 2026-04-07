@@ -1,0 +1,57 @@
+server:
+  port: 8080
+  # Increase max request size for file uploads
+  max-http-request-header-size: 64KB
+
+spring:
+  application:
+    name: copaw-java
+  webflux:
+    base-path: /api
+  codec:
+    max-in-memory-size: 50MB
+  servlet:
+    multipart:
+      max-file-size: 50MB
+      max-request-size: 50MB
+
+# CoPaw configuration
+copaw:
+  # Root working directory (contains config.json + agent workspaces)
+  # Override with: --copaw.working-dir=/path/to/workdir
+  working-dir: ${user.home}/.copaw
+  config-file: config.json
+
+# Actuator (health check)
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+  endpoint:
+    health:
+      show-details: when_authorized
+
+# Logging
+logging:
+  level:
+    io.copaw: INFO
+    io.agentscope: INFO
+    root: WARN
+  pattern:
+    console: "%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n"
+
+---
+# Development profile
+spring:
+  config:
+    activate:
+      on-profile: dev
+
+logging:
+  level:
+    io.copaw: DEBUG
+    io.agentscope: DEBUG
+
+copaw:
+  working-dir: ${user.home}/.copaw-dev

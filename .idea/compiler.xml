@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="CompilerConfiguration">
+    <annotationProcessing>
+      <profile default="true" name="Default" enabled="true" />
+      <profile name="Maven default annotation processors profile" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+      </profile>
+      <profile name="Annotation profile for CoPaw Java" enabled="true">
+        <sourceOutputDir name="target/generated-sources/annotations" />
+        <sourceTestOutputDir name="target/generated-test-sources/test-annotations" />
+        <outputRelativeToContentRoot value="true" />
+        <processorPath useClasspath="false">
+          <entry name="$USER_HOME$/.m2/repository2/org/projectlombok/lombok/1.18.34/lombok-1.18.34.jar" />
+          <entry name="$USER_HOME$/.m2/repository2/org/mapstruct/mapstruct-processor/1.5.5.Final/mapstruct-processor-1.5.5.Final.jar" />
+          <entry name="$USER_HOME$/.m2/repository2/org/mapstruct/mapstruct/1.5.5.Final/mapstruct-1.5.5.Final.jar" />
+        </processorPath>
+        <module name="copaw-common" />
+        <module name="copaw-app" />
+        <module name="copaw-workspace" />
+        <module name="copaw-memory" />
+        <module name="copaw-skills" />
+        <module name="copaw-api" />
+        <module name="copaw-cron" />
+        <module name="copaw-core" />
+      </profile>
+    </annotationProcessing>
+  </component>
+</project>
