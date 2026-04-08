@@ -118,7 +118,11 @@
               <el-row :gutter="12">
                 <el-col :span="12">
                   <el-form-item label="Max Tokens">
-                    <el-input-number v-model="form.maxTokens" :min="1" :step="128" :controls="true" style="width: 100%" />
+                    <el-input-number v-model="form.maxTokens" :min="2" :step="128" :controls="true" style="width: 100%" />
+                    <div class="field-inline-actions">
+                      <el-button type="text" @click="form.maxTokens = null">使用默认值</el-button>
+                      <span class="field-tip">留空时走模型默认值；小于 2 的值不会再保存。</span>
+                    </div>
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
@@ -220,8 +224,14 @@ function normalizeString(value) {
   return String(value == null ? "" : value).trim();
 }
 
-function normalizeNullableNumber(value) {
-  return typeof value === "number" && !Number.isNaN(value) ? value : null;
+function normalizeNullableNumber(value, minValue) {
+  if (typeof value !== "number" || Number.isNaN(value)) {
+    return null;
+  }
+  if (typeof minValue === "number" && value < minValue) {
+    return null;
+  }
+  return value;
 }
 
 function readModelForm(config) {
@@ -245,9 +255,9 @@ function readModelForm(config) {
     model: source.model || "",
     baseUrl: source.base_url || "",
     apiKey: source.api_key || "",
-    maxTokens: normalizeNullableNumber(source.max_tokens),
+    maxTokens: normalizeNullableNumber(source.max_tokens, 2),
     temperature: normalizeNullableNumber(source.temperature),
-    maxIters: normalizeNullableNumber(running.max_iters) || 30
+    maxIters: normalizeNullableNumber(running.max_iters, 1) || 30
   };
 }
 
@@ -310,10 +320,10 @@ export default {
         model: normalizeString(this.form.model),
         base_url: normalizeString(this.form.baseUrl) || null,
         api_key: normalizeString(this.form.apiKey) || null,
-        max_tokens: normalizeNullableNumber(this.form.maxTokens),
+        max_tokens: normalizeNullableNumber(this.form.maxTokens, 2),
         temperature: normalizeNullableNumber(this.form.temperature),
         running: {
-          max_iters: normalizeNullableNumber(this.form.maxIters) || 30
+          max_iters: normalizeNullableNumber(this.form.maxIters, 1) || 30
         }
       });
     }
@@ -415,9 +425,9 @@ export default {
 
       const baseUrl = normalizeString(this.form.baseUrl);
       const apiKey = normalizeString(this.form.apiKey);
-      const maxTokens = normalizeNullableNumber(this.form.maxTokens);
+      const maxTokens = normalizeNullableNumber(this.form.maxTokens, 2);
       const temperature = normalizeNullableNumber(this.form.temperature);
-      const maxIters = normalizeNullableNumber(this.form.maxIters) || 30;
+      const maxIters = normalizeNullableNumber(this.form.maxIters, 1) || 30;
 
       if (baseUrl) {
         nextConfig.active_model.base_url = baseUrl;
@@ -533,6 +543,20 @@ export default {
   color: var(--text);
   line-height: 1.6;
   word-break: break-word;
+}
+
+.field-inline-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.field-tip {
+  color: var(--text-soft);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .raw-json-block {

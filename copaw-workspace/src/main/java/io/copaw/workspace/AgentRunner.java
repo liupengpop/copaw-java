@@ -23,6 +23,9 @@ import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.ArrayList;
@@ -33,6 +36,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -56,6 +60,9 @@ public class AgentRunner {
     private static final int STREAM_CHUNK_SIZE = 24;
     private static final String DEFAULT_DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
     private static final String DEFAULT_OLLAMA_BASE_URL = "http://localhost:11434";
+    private static final List<String> DEFAULT_SYSTEM_PROMPT_FILES = List.of("AGENTS.md", "SOUL.md", "PROFILE.md");
+    private static final Pattern YAML_FRONTMATTER_PATTERN = Pattern.compile("(?s)^---\\s*\\R.*?\\R---\\s*\\R?");
+    private static final Pattern HEARTBEAT_SECTION_PATTERN = Pattern.compile("(?s)<!-- heartbeat:start -->.*?<!-- heartbeat:end -->");
 
     private final String agentId;
     private final Path workspaceDir;
@@ -267,6 +274,8 @@ public class AgentRunner {
             activeAgents.put(chatId, agent);
 
             List<Msg> promptMessages = buildPromptMessages(context);
+            log.debug("Agent {} prompt window for chat {}: {}",
+                    agentId, chatId, summarizePromptMessages(promptMessages));
             Msg responseMsg = agent.call(promptMessages).block(AGENT_CALL_TIMEOUT);
 
             if (stopFlag.get()) {
@@ -276,6 +285,14 @@ public class AgentRunner {
             if (responseMsg == null) {
                 throw new IllegalStateException("Agent returned null response");
             }
+
+            log.debug("Agent {} raw response for chat {}: role={}, name={}, text={}, blockTypes={}",
+                    agentId,
+                    chatId,
+                    responseMsg.getRole(),
+                    responseMsg.getName(),
+                    abbreviateForLog(responseMsg.getTextContent(), 120),
+                    describeContentBlocks(responseMsg));
 
             String response = normalizeAgentText(chatId, responseMsg);
             if (hasText(response)) {
@@ -382,7 +399,7 @@ public class AgentRunner {
         GenerateOptions options = buildGenerateOptions(modelConfig);
         OpenAIChatModel.Builder builder = OpenAIChatModel.builder()
                 .modelName(requireModelName(modelConfig))
-                .stream(false)
+                .stream(true)
                 .generateOptions(options);
 
         String apiKey = resolveApiKey(modelConfig, providerId);
@@ -401,7 +418,7 @@ public class AgentRunner {
     private Model buildAnthropicModel(ModelSlotConfig modelConfig) {
         AnthropicChatModel.Builder builder = AnthropicChatModel.builder()
                 .modelName(requireModelName(modelConfig))
-                .stream(false)
+                .stream(true)
                 .defaultOptions(buildGenerateOptions(modelConfig));
 
         String apiKey = resolveApiKey(modelConfig, "anthropic");
@@ -434,8 +451,9 @@ public class AgentRunner {
         if (modelConfig.getTemperature() != null) {
             builder.temperature(modelConfig.getTemperature());
         }
-        if (modelConfig.getMaxTokens() != null) {
-            builder.maxTokens(modelConfig.getMaxTokens());
+        Integer normalizedMaxTokens = normalizeConfiguredMaxTokens(modelConfig.getMaxTokens());
+        if (normalizedMaxTokens != null) {
+            builder.maxTokens(normalizedMaxTokens);
         }
         if (hasText(modelConfig.getApiKey())) {
             builder.apiKey(modelConfig.getApiKey());
@@ -452,10 +470,24 @@ public class AgentRunner {
                 : 8_000;
 
         List<MemoryManager.Message> memoryWindow = memoryManager.getContextWindow(contextTokenLimit);
-        List<Msg> messages = new ArrayList<>(memoryWindow.size());
-        for (int i = 0; i < memoryWindow.size(); i++) {
-            MemoryManager.Message memoryMessage = memoryWindow.get(i);
-            boolean attachRuntimeContext = i == memoryWindow.size() - 1;
+        List<MemoryManager.Message> sanitizedWindow = memoryWindow.stream()
+                .filter(this::shouldKeepInPrompt)
+                .collect(Collectors.toList());
+        List<MemoryManager.Message> promptWindow = sanitizedWindow.isEmpty() ? memoryWindow : sanitizedWindow;
+
+        String systemPrompt = buildSystemPrompt();
+        int initialCapacity = promptWindow.size() + (hasText(systemPrompt) ? 1 : 0);
+        List<Msg> messages = new ArrayList<>(initialCapacity);
+        if (hasText(systemPrompt)) {
+            messages.add(Msg.builder()
+                    .id(UUID.randomUUID().toString())
+                    .role(MsgRole.SYSTEM)
+                    .textContent(systemPrompt)
+                    .build());
+        }
+        for (int i = 0; i < promptWindow.size(); i++) {
+            MemoryManager.Message memoryMessage = promptWindow.get(i);
+            boolean attachRuntimeContext = i == promptWindow.size() - 1;
             messages.add(toAgentMessage(memoryMessage, attachRuntimeContext ? context : null));
         }
         return messages;
@@ -510,14 +542,23 @@ public class AgentRunner {
     }
 
     private String normalizeAgentText(String chatId, Msg responseMsg) {
-        // 1. Best case: getTextContent() already extracts TextBlock text
+        // 1. Best case: getTextContent() already extracts TextBlock text.
+        //    But do not trust bare role labels like `用户` / `assistant` — those are invalid UI payloads.
         String text = responseMsg.getTextContent();
-        if (hasText(text)) {
+        if (hasText(text) && !looksLikeBareRoleLabel(text)) {
             return text;
         }
+        if (looksLikeBareRoleLabel(text)) {
+            log.warn("Agent {} produced suspicious role-label text for chat {}: role={}, text={}, blockTypes={}",
+                    agentId,
+                    chatId,
+                    responseMsg.getRole(),
+                    abbreviateForLog(text, 80),
+                    describeContentBlocks(responseMsg));
+        }
 
-        // 2. Fallback: collect text from non-tool, non-thinking blocks
-        //    ThinkingBlock = Anthropic extended-thinking internal monologue, never show to users.
+        // 2. Fallback: collect displayable content from non-tool, non-thinking blocks.
+        //    ThinkingBlock = internal monologue, never show to users.
         //    ToolUseBlock  = tool invocation, not displayable text.
         String fallback = responseMsg.getContent().stream()
                 .filter(block -> !(block instanceof ToolUseBlock))
@@ -525,10 +566,18 @@ public class AgentRunner {
                 .map(String::valueOf)
                 .filter(this::hasText)
                 .collect(Collectors.joining("\n"));
-        if (hasText(fallback)) {
+        if (hasText(fallback) && !looksLikeBareRoleLabel(fallback)) {
             log.debug("Agent {} resolved text from non-TextBlock content for chat {}: blockTypes={}",
                     agentId, chatId, describeContentBlocks(responseMsg));
             return fallback;
+        }
+        if (looksLikeBareRoleLabel(fallback)) {
+            log.warn("Agent {} fallback content also collapsed to role label for chat {}: text={}, blockTypes={}",
+                    agentId,
+                    chatId,
+                    abbreviateForLog(fallback, 80),
+                    describeContentBlocks(responseMsg));
+            return "";
         }
 
         // 3. Only thinking blocks and/or tool-use blocks — agent is mid-ReAct loop or thinking-only turn.
@@ -554,12 +603,145 @@ public class AgentRunner {
                 .collect(Collectors.joining(", ", "[", "]"));
     }
 
-    private String buildSystemPrompt() {
-        if (hasText(config.getDescription())) {
-            return config.getDescription();
+    private boolean shouldKeepInPrompt(MemoryManager.Message memoryMessage) {
+        if (memoryMessage == null || !hasText(memoryMessage.content())) {
+            return false;
         }
-        return "You are " + firstNonBlank(config.getName(), "CoPaw Agent")
-                + ". Be helpful, accurate, concise, and execution-oriented.";
+        String role = memoryMessage.role() != null
+                ? memoryMessage.role().trim().toLowerCase(Locale.ROOT)
+                : "";
+        if (!"assistant".equals(role)) {
+            return true;
+        }
+        String content = memoryMessage.content().trim();
+        return !looksLikeBareRoleLabel(content)
+                && !"[Agent returned empty response]".equals(content)
+                && !"[Agent produced tool calls but no final text response]".equals(content)
+                && !"（Agent 思考完毕，无文本输出）".equals(content);
+    }
+
+    private boolean looksLikeBareRoleLabel(String value) {
+        if (!hasText(value)) {
+            return false;
+        }
+        return switch (value.trim().toLowerCase(Locale.ROOT)) {
+            case "user", "assistant", "system", "tool", "用户", "助手", "系统", "工具" -> true;
+            default -> false;
+        };
+    }
+
+    private String summarizePromptMessages(List<Msg> messages) {
+        return messages.stream()
+                .map(msg -> {
+                    String text = abbreviateForLog(msg.getTextContent(), 40);
+                    return msg.getRole() + ":" + (text != null ? text : "<empty>");
+                })
+                .collect(Collectors.joining(" | "));
+    }
+
+    private String abbreviateForLog(String value, int maxLength) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.replace("\n", "\\n");
+        if (normalized.length() <= maxLength) {
+            return normalized;
+        }
+        return normalized.substring(0, maxLength) + "...";
+    }
+
+    private String buildSystemPrompt() {
+        String basePrompt = buildWorkspaceSystemPrompt();
+        if (!hasText(basePrompt) && hasText(config.getDescription())) {
+            basePrompt = config.getDescription();
+        }
+        if (!hasText(basePrompt)) {
+            basePrompt = "You are " + firstNonBlank(config.getName(), "CoPaw Agent")
+                    + ". Be helpful, accurate, concise, and execution-oriented.";
+        }
+        String identityHeader = buildAgentIdentityHeader();
+        if (hasText(identityHeader) && hasText(basePrompt)) {
+            return identityHeader + "\n\n" + basePrompt;
+        }
+        return hasText(basePrompt) ? basePrompt : identityHeader;
+    }
+
+    private String buildAgentIdentityHeader() {
+        return "# Agent Identity\n\n"
+                + "Your agent id is `" + agentId + "`. "
+                + "This is your unique identifier in the multi-agent system.";
+    }
+
+    private String buildWorkspaceSystemPrompt() {
+        List<String> promptParts = new ArrayList<>();
+        int loadedFiles = 0;
+        for (String filename : DEFAULT_SYSTEM_PROMPT_FILES) {
+            String content = readWorkspacePromptFile(filename);
+            if (!hasText(content)) {
+                continue;
+            }
+            if (!promptParts.isEmpty()) {
+                promptParts.add("");
+            }
+            promptParts.add("# " + filename);
+            promptParts.add("");
+            promptParts.add(content);
+            loadedFiles++;
+        }
+        if (promptParts.isEmpty()) {
+            return "";
+        }
+        String prompt = String.join("\n\n", promptParts);
+        log.debug("Agent {} built workspace system prompt from {} file(s) at {}",
+                agentId, loadedFiles, workspaceDir);
+        return prompt;
+    }
+
+    private String readWorkspacePromptFile(String filename) {
+        Path filePath = workspaceDir.resolve(filename);
+        if (!Files.exists(filePath) || !Files.isRegularFile(filePath)) {
+            return "";
+        }
+        try {
+            String content = Files.readString(filePath, StandardCharsets.UTF_8);
+            return sanitizeWorkspacePromptContent(filename, content);
+        } catch (IOException e) {
+            log.warn("Agent {} failed to read prompt file {}: {}", agentId, filePath, e.getMessage());
+            return "";
+        }
+    }
+
+    private String sanitizeWorkspacePromptContent(String filename, String rawContent) {
+        if (!hasText(rawContent)) {
+            return "";
+        }
+        String content = rawContent.strip();
+        if (content.startsWith("---")) {
+            content = YAML_FRONTMATTER_PATTERN.matcher(content).replaceFirst("").strip();
+        }
+        if ("AGENTS.md".equalsIgnoreCase(filename)) {
+            boolean heartbeatEnabled = config.getHeartbeat() != null && config.getHeartbeat().isEnabled();
+            if (heartbeatEnabled) {
+                content = content.replace("<!-- heartbeat:start -->", "")
+                        .replace("<!-- heartbeat:end -->", "")
+                        .strip();
+            } else {
+                content = HEARTBEAT_SECTION_PATTERN.matcher(content).replaceAll("").strip();
+            }
+        }
+        return content;
+    }
+
+    private Integer normalizeConfiguredMaxTokens(Integer maxTokens) {
+        if (maxTokens == null) {
+            return null;
+        }
+        if (maxTokens <= 1) {
+            log.warn("Agent {} ignoring suspicious active_model.max_tokens={} and falling back to provider default",
+                    agentId, maxTokens);
+            return null;
+        }
+        return maxTokens;
     }
 
     private String normalizeProviderId(String providerId) {
