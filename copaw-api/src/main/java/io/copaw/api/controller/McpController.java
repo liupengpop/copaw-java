@@ -34,23 +34,23 @@ public class McpController {
     private final MultiAgentManager multiAgentManager;
 
     @GetMapping
-    public Map<String, Object> listClients(@RequestParam String agentId) {
+    public Map<String, Object> listClients(@RequestParam("agentId") String agentId) {
         McpClientManager mgr = getManager(agentId);
         return Map.of("clients", mgr.listConfigs());
     }
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public Map<String, Object> addClient(@RequestParam String agentId,
-                                          @RequestBody McpClientConfig config) throws Exception {
+    public Map<String, Object> addClient(@RequestParam("agentId") String agentId,
+                                         @RequestBody McpClientConfig config) throws Exception {
         McpClientManager mgr = getManager(agentId);
         mgr.addClient(config);
         return Map.of("added", true, "id", config.getId());
     }
 
     @DeleteMapping("/{id}")
-    public Map<String, Object> removeClient(@RequestParam String agentId,
-                                             @PathVariable("id") String clientId) {
+    public Map<String, Object> removeClient(@RequestParam("agentId") String agentId,
+                                            @PathVariable("id") String clientId) {
         McpClientManager mgr = getManager(agentId);
         boolean removed = mgr.removeClient(clientId);
         if (!removed) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "MCP client not found: " + clientId);
@@ -58,8 +58,8 @@ public class McpController {
     }
 
     @PostMapping("/{id}/enable")
-    public Map<String, Object> enableClient(@RequestParam String agentId,
-                                             @PathVariable("id") String clientId) throws Exception {
+    public Map<String, Object> enableClient(@RequestParam("agentId") String agentId,
+                                            @PathVariable("id") String clientId) throws Exception {
         McpClientManager mgr = getManager(agentId);
         List<McpClientConfig> configs = mgr.listConfigs();
         McpClientConfig cfg = configs.stream()
@@ -72,8 +72,8 @@ public class McpController {
     }
 
     @PostMapping("/{id}/disable")
-    public Map<String, Object> disableClient(@RequestParam String agentId,
-                                              @PathVariable("id") String clientId) {
+    public Map<String, Object> disableClient(@RequestParam("agentId") String agentId,
+                                             @PathVariable("id") String clientId) {
         McpClientManager mgr = getManager(agentId);
         mgr.removeClient(clientId);
         return Map.of("disabled", true, "id", clientId);

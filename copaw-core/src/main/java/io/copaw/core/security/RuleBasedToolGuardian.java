@@ -3,25 +3,17 @@ package io.copaw.core.security;
 import io.copaw.common.config.ToolGuardConfig;
 import io.copaw.common.config.ToolGuardRuleConfig;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 /**
  * Rule-based tool guardian using regex patterns from configuration.
  * Maps to Python: RuleBasedToolGuardian in security/tool_guard/guardians/rule_guardian.py
- *
- * Rules are defined in agent.json under toolGuard.rules[].
- * Each rule has:
- *   - id, description, severity
- *   - tools: list of tool names this rule applies to (empty = all)
- *   - pattern: regex pattern to match against serialized tool params
- *   - deny: block the call if matched
- *   - requireApproval: ask user approval if matched
  */
-@Component
 @Slf4j
 public class RuleBasedToolGuardian implements ToolGuardian {
 
@@ -29,12 +21,14 @@ public class RuleBasedToolGuardian implements ToolGuardian {
     private List<CompiledRule> compiledRules;
 
     public RuleBasedToolGuardian(ToolGuardConfig config) {
-        this.config = config;
+        this.config = config != null ? config : new ToolGuardConfig();
         compileRules();
     }
 
     @Override
-    public String getName() { return "rule-based-guardian"; }
+    public String getName() {
+        return "rule-based-guardian";
+    }
 
     @Override
     public void reload() {
@@ -45,43 +39,45 @@ public class RuleBasedToolGuardian implements ToolGuardian {
     @Override
     public List<GuardFinding> guard(String toolName, Map<String, Object> params) {
         List<GuardFinding> findings = new ArrayList<>();
-
-        // Serialize params to string for regex matching
         String paramsStr = paramsToString(params);
 
         for (CompiledRule rule : compiledRules) {
-            if (!rule.config.isEnabled()) continue;
-            if (!appliesToTool(rule.config, toolName)) continue;
-
-            if (rule.pattern.matcher(paramsStr).find()
-                    || rule.pattern.matcher(toolName).find()) {
-                GuardSeverity severity = parseSeverity(rule.config.getSeverity());
-                findings.add(GuardFinding.builder()
-                        .toolName(toolName)
-                        .ruleId(rule.config.getId())
-                        .severity(severity)
-                        .description(rule.config.getDescription())
-                        .requiresApproval(rule.config.isRequireApproval() ||
-                                severity == GuardSeverity.HIGH)
-                        .threatCategory("rule-match")
-                        .build());
+            if (!rule.config.isEnabled()) {
+                continue;
             }
+            if (!appliesToTool(rule.config, toolName)) {
+                continue;
+            }
+            if (!(rule.pattern.matcher(paramsStr).find() || rule.pattern.matcher(toolName).find())) {
+                continue;
+            }
+
+            GuardSeverity severity = rule.config.isDeny()
+                    ? GuardSeverity.CRITICAL
+                    : parseSeverity(rule.config.getSeverity());
+            findings.add(GuardFinding.builder()
+                    .toolName(toolName)
+                    .ruleId(rule.config.getId())
+                    .severity(severity)
+                    .description(rule.config.getDescription())
+                    .requiresApproval(!rule.config.isDeny()
+                            && (rule.config.isRequireApproval() || severity == GuardSeverity.HIGH))
+                    .threatCategory("rule-match")
+                    .build());
         }
 
         return findings;
     }
 
-    // ------------------------------------------------------------------
-    // Internal
-    // ------------------------------------------------------------------
-
     private void compileRules() {
         compiledRules = new ArrayList<>();
         for (ToolGuardRuleConfig rule : config.getRules()) {
-            if (rule.getPattern() == null || rule.getPattern().isBlank()) continue;
+            if (rule.getPattern() == null || rule.getPattern().isBlank()) {
+                continue;
+            }
             try {
-                Pattern p = Pattern.compile(rule.getPattern(), Pattern.CASE_INSENSITIVE);
-                compiledRules.add(new CompiledRule(rule, p));
+                Pattern pattern = Pattern.compile(rule.getPattern(), Pattern.CASE_INSENSITIVE);
+                compiledRules.add(new CompiledRule(rule, pattern));
             } catch (PatternSyntaxException e) {
                 log.warn("Invalid regex in tool guard rule '{}': {}", rule.getId(), e.getMessage());
             }
@@ -95,18 +91,22 @@ public class RuleBasedToolGuardian implements ToolGuardian {
     }
 
     private String paramsToString(Map<String, Object> params) {
-        if (params == null) return "";
+        if (params == null) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder();
-        for (Map.Entry<String, Object> e : params.entrySet()) {
-            sb.append(e.getKey()).append('=').append(e.getValue()).append(' ');
+        for (Map.Entry<String, Object> entry : params.entrySet()) {
+            sb.append(entry.getKey()).append('=').append(entry.getValue()).append(' ');
         }
         return sb.toString();
     }
 
-    private GuardSeverity parseSeverity(String s) {
-        if (s == null) return GuardSeverity.MEDIUM;
+    private GuardSeverity parseSeverity(String value) {
+        if (value == null) {
+            return GuardSeverity.MEDIUM;
+        }
         try {
-            return GuardSeverity.valueOf(s.toUpperCase());
+            return GuardSeverity.valueOf(value.toUpperCase());
         } catch (IllegalArgumentException e) {
             return GuardSeverity.MEDIUM;
         }

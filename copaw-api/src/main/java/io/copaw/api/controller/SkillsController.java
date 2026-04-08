@@ -38,7 +38,7 @@ public class SkillsController {
     private final SkillService skillService;
 
     @GetMapping
-    public Map<String, Object> listSkills(@RequestParam String agentId) {
+    public Map<String, Object> listSkills(@RequestParam("agentId") String agentId) {
         Workspace ws = getWorkspace(agentId);
         List<SkillMeta> skills = skillService.loadManifest(ws.getWorkspaceDir());
         return Map.of("skills", skills, "total", skills.size());
@@ -46,8 +46,8 @@ public class SkillsController {
 
     @PostMapping("/import-zip")
     @ResponseStatus(HttpStatus.CREATED)
-    public Map<String, Object> importZip(@RequestParam String agentId,
-                                          @RequestParam("file") MultipartFile file) throws IOException {
+    public Map<String, Object> importZip(@RequestParam("agentId") String agentId,
+                                         @RequestParam("file") MultipartFile file) throws IOException {
         Workspace ws = getWorkspace(agentId);
         SkillMeta meta = skillService.importFromZip(
                 ws.getWorkspaceDir(),
@@ -57,8 +57,8 @@ public class SkillsController {
     }
 
     @PostMapping("/{dir}/enable")
-    public Map<String, Object> enableSkill(@RequestParam String agentId,
-                                            @PathVariable String dir) {
+    public Map<String, Object> enableSkill(@RequestParam("agentId") String agentId,
+                                           @PathVariable("dir") String dir) {
         Workspace ws = getWorkspace(agentId);
         boolean ok = skillService.setEnabled(ws.getWorkspaceDir(), dir, true);
         if (!ok) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found: " + dir);
@@ -66,8 +66,8 @@ public class SkillsController {
     }
 
     @PostMapping("/{dir}/disable")
-    public Map<String, Object> disableSkill(@RequestParam String agentId,
-                                             @PathVariable String dir) {
+    public Map<String, Object> disableSkill(@RequestParam("agentId") String agentId,
+                                            @PathVariable("dir") String dir) {
         Workspace ws = getWorkspace(agentId);
         boolean ok = skillService.setEnabled(ws.getWorkspaceDir(), dir, false);
         if (!ok) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found: " + dir);
@@ -75,9 +75,9 @@ public class SkillsController {
     }
 
     @PutMapping("/{dir}/channels")
-    public Map<String, Object> updateChannels(@RequestParam String agentId,
-                                               @PathVariable String dir,
-                                               @RequestBody ChannelsRequest req) {
+    public Map<String, Object> updateChannels(@RequestParam("agentId") String agentId,
+                                              @PathVariable("dir") String dir,
+                                              @RequestBody ChannelsRequest req) {
         Workspace ws = getWorkspace(agentId);
         boolean ok = skillService.setChannels(ws.getWorkspaceDir(), dir, req.getChannels());
         if (!ok) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found: " + dir);
@@ -85,8 +85,8 @@ public class SkillsController {
     }
 
     @DeleteMapping("/{dir}")
-    public Map<String, Object> deleteSkill(@RequestParam String agentId,
-                                            @PathVariable String dir) throws IOException {
+    public Map<String, Object> deleteSkill(@RequestParam("agentId") String agentId,
+                                           @PathVariable("dir") String dir) throws IOException {
         Workspace ws = getWorkspace(agentId);
         boolean ok = skillService.deleteSkill(ws.getWorkspaceDir(), dir);
         if (!ok) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Skill not found: " + dir);

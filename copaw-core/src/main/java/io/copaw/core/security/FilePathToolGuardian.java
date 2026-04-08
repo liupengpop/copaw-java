@@ -1,7 +1,6 @@
 package io.copaw.core.security;
 
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Component;
 
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
@@ -16,7 +15,6 @@ import java.util.Set;
  * Blocks tool calls that attempt to access dangerous system paths.
  * Maps to Python: FilePathToolGuardian in security/tool_guard/guardians/file_guardian.py
  */
-@Component
 @Slf4j
 public class FilePathToolGuardian implements ToolGuardian {
 

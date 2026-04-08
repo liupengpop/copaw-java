@@ -84,13 +84,13 @@ copaw-app
 | `config/config.py` → `MemoryConfig` | `copaw-common/.../config/MemoryConfig.java` | ✅ 已实现 |
 | `app/multi_agent_manager.py` | `copaw-workspace/.../MultiAgentManager.java` | ✅ 已实现 |
 | `app/workspace/workspace.py` | `copaw-workspace/.../Workspace.java` | ✅ 已实现 |
-| `app/runner/runner.py` | `copaw-workspace/.../AgentRunner.java` | ✅ 骨架完成，**需接入 AS-Java** |
-| `agents/react_agent.py` → `CoPawAgent` | **TODO** - 需接入 `io.agentscope:agentscope-spring-boot-starter` | ⏳ 待接入 |
+| `app/runner/runner.py` | `copaw-workspace/.../AgentRunner.java` | ✅ 已接入真实 ReActAgent、WorkspaceTools 与 MCP toolkit 注册 |
+| `agents/react_agent.py` → `CoPawAgent` | **TODO** - 暂以 `ReActAgent + WorkspaceTools` 组合替代完整 CoPawAgent 封装 | ⏳ 部分替代已落地 |
 | `agents/memory/base_memory_manager.py` | `copaw-memory/.../MemoryManager.java` | ✅ 已实现 |
 | `agents/memory/reme_light_memory_manager.py` | `copaw-memory/.../ReMeLightMemoryManager.java` | ✅ 已实现 |
 | `agents/skills_manager.py` → `SkillService` | `copaw-skills/.../SkillService.java` | ✅ 已实现 |
 | `agents/skills_manager.py` → SKILL.md 解析 | `copaw-skills/.../SkillMdParser.java` | ✅ 已实现 |
-| `security/tool_guard/engine.py` | `copaw-core/.../security/ToolGuardEngine.java` | ✅ 已实现 |
+| `security/tool_guard/engine.py` | `copaw-core/.../security/ToolGuardEngine.java` | ✅ 已实现，并接入 Workspace 运行时 |
 | `security/tool_guard/guardians/file_guardian.py` | `copaw-core/.../security/FilePathToolGuardian.java` | ✅ 已实现 |
 | `security/tool_guard/guardians/rule_guardian.py` | `copaw-core/.../security/RuleBasedToolGuardian.java` | ✅ 已实现 |
 | `agents/tools/` → read_file | `copaw-core/.../tools/impl/ReadFileTool.java` | ✅ |
@@ -104,7 +104,7 @@ copaw-app
 | `agents/tools/` → desktop_screenshot | **TODO** | ⏳ |
 | `app/crons/manager.py` | `copaw-cron/.../CronManager.java` | ✅ 已实现 |
 | `app/crons/repo/json_repo.py` | `copaw-cron/.../JsonJobRepository.java` | ✅ 已实现 |
-| `app/routers/console.py` | `copaw-api/.../ConsoleController.java` | ✅ 已实现 |
+| `app/routers/console.py` | `copaw-api/.../ConsoleController.java` | ✅ 已实现，含 push messages / approval resolve |
 | `app/routers/agents.py` | `copaw-api/.../AgentsController.java` | ✅ 已实现 |
 | `app/routers/mcp.py` | `copaw-api/.../McpController.java` | ✅ 已实现 |
 | `app/routers/skills.py` | `copaw-api/.../SkillsController.java` | ✅ 已实现 |
@@ -178,11 +178,56 @@ memoryManager = new ReMeLightMemoryManager(
 );
 ```
 
-### 4.4 安全配置需要每个 Workspace 独立的 ToolGuardEngine
+### 4.4 已完成：每个 Workspace 独立的 ToolGuard / 审批 / Push Message 链路
 
-当前 `ToolGuardEngine` 是 Spring singleton。需要改为每个 Workspace 独立实例：
-- `Workspace.start()` 中读取 `config.getToolGuard()` 并创建独立的 `ToolGuardEngine`
-- `CoPawAgent` 在每次工具调用前调用 `toolGuardEngine.guard(toolName, params)`
+当前已经不再依赖 Spring singleton 级别的工具安全状态，而是在 `Workspace.start()` 内为每个 workspace 独立创建：
+- `ToolGuardEngine`（读取 `agent.json` 的 `tool_guard` 配置）
+- `ConsolePushMessageStore`（按 `session_id` 聚合侧带消息）
+- `ApprovalService`（阻塞等待审批结果，并推送 required / resolved / timeout 事件）
+- `WorkspaceTools`（把 ToolGuard + BuiltinTool + MemoryManager 封装成 AgentScope Toolkit 工具）
+
+当前运行时链路为：
+
+```java
+pushMessageStore = new ConsolePushMessageStore();
+approvalService = new ApprovalService(pushMessageStore);
+toolGuardEngine = new ToolGuardEngine(
+        config.getToolGuard(),
+        List.of(new FilePathToolGuardian(), new RuleBasedToolGuardian(config.getToolGuard()))
+);
+WorkspaceTools workspaceTools = new WorkspaceTools(
+        agentId,
+        workspaceDir,
+        memoryManager,
+        toolGuardEngine,
+        approvalService
+);
+runner = new AgentRunner(agentId, workspaceDir, config, memoryManager,
+        mcpClientManager, skillService, workspaceTools);
+```
+
+工具被拒绝时会写入 console push message；需要审批时会生成 `tool_approval_required` 事件，并由 `/api/console/approvals/{approvalId}/resolve?agentId=` 完成批准或拒绝。
+
+### 4.5 已完成：MCP 真实连接与 toolkit 注册
+
+`McpClientManager` 已从 stub 切换为真实的 AgentScope-Java MCP 客户端接入，当前支持：
+- `stdio` → `McpClientBuilder.create(id).stdioTransport(command, args...)`
+- `sse` → `McpClientBuilder.create(id).sseTransport(url)`
+- `http` / `streamable-http` → `McpClientBuilder.create(id).streamableHttpTransport(url)`
+
+连接建立后会显式执行 `client.initialize().block()`，停止时调用 `client.close()`。`AgentRunner.buildAgent()` 会把所有已连接的 `McpClientWrapper` 注册进 `Toolkit`：
+
+```java
+Toolkit toolkit = new Toolkit();
+toolkit.registerTool(workspaceTools);
+for (McpClientWrapper client : mcpClientManager.listClients()) {
+    toolkit.registerMcpClient(client).block();
+}
+```
+
+### 4.6 已完成：memory_search 工具接入运行时
+
+当前 `WorkspaceTools` 已向 AgentScope 注册 `memory_search` 工具，并直接复用 `MemoryManager.search(query, topK)`。现阶段底层仍是 `ReMeLightMemoryManager` 的关键词回退实现，不是向量数据库；但从 runtime 接线角度，Agent 已经可以通过工具统一访问记忆检索能力。
 
 ---
 
@@ -278,15 +323,9 @@ mvn spring-boot:run -pl copaw-app \
 
 | 优先级 | 任务 | 涉及文件 |
 |---|---|---|
-| P0 | 接入 AgentScope-Java ReActAgent | `AgentRunner.runAgentAndEmit()` |
-| P0 | 接入实际 LLM 做记忆摘要 | `Workspace.start()` - summarizer lambda |
-| P0 | CronManager 接入 Workspace | `Workspace.java` + `CronController.java` |
-| P0 | JSON 字段名 snake_case 兼容 Python | `ObjectMapper` 配置 |
-| P1 | 完善 ToolGuardEngine 接入 Agent | `AgentRunner` + `ToolGuardEngine` |
-| P1 | Console 渠道补全（push messages store） | `ConsoleController.getPushMessages()` |
-| P1 | 完善 AgentRunner 的工具调用审批流 | `AgentRunner.java` |
-| P1 | 接入 AgentScope-Java McpClientBuilder | `McpClientManager.connectClient()` |
-| P1 | 语义记忆搜索（向量数据库） | `ReMeLightMemoryManager.search()` |
+| P1 | 接入实际 LLM 做记忆摘要 | `Workspace.start()` - summarizer lambda |
+| P1 | 将 `memory_search` 从关键词检索升级为向量/语义检索 | `ReMeLightMemoryManager.search()` 或新建向量存储实现 |
+| P2 | 补齐 reconnect / stream store，支持控制台断线续流 | `ConsoleController` + `AgentRunner` |
 | P2 | 飞书渠道 | 新建 `copaw-channel-feishu` 模块 |
 | P2 | 钉钉渠道 | 新建 `copaw-channel-dingtalk` 模块 |
 | P2 | Telegram 渠道 | 新建 `copaw-channel-telegram` 模块 |

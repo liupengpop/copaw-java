@@ -24,6 +24,12 @@ public interface MemoryManager {
     List<Message> getContextWindow(int maxTokens);
 
     /**
+     * Get ALL messages in memory (for UI display / session history).
+     * Returns an unmodifiable snapshot.
+     */
+    List<Message> getAll();
+
+    /**
      * Compact the context: summarize old messages and replace with summary.
      * Maps to Python: /compact command handling.
      *

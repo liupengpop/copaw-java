@@ -2,9 +2,12 @@ package io.copaw.core.security;
 
 import io.copaw.common.config.ToolGuardConfig;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 /**
  * Orchestrates all registered ToolGuardians and aggregates findings.
@@ -12,10 +15,9 @@ import java.util.*;
  *
  * Usage:
  *   ToolGuardResult result = engine.guard("execute_shell_command", params);
- *   if (result.isDenied()) { throw new ToolDeniedException(...); }
- *   if (result.requiresApproval()) { // ask user }
+ *   if (result != null && result.isDenied()) { throw new ToolDeniedException(...); }
+ *   if (result != null && result.requiresApproval()) { // ask user }
  */
-@Service
 @Slf4j
 public class ToolGuardEngine {
 
@@ -25,19 +27,16 @@ public class ToolGuardEngine {
     private volatile Set<String> guardedTools; // null = all tools
 
     public ToolGuardEngine(ToolGuardConfig config, List<ToolGuardian> guardians) {
-        this.guardians = new ArrayList<>(guardians);
-        this.enabled = config.isEnabled();
-        this.deniedTools = new HashSet<>(config.getDeniedTools());
-        this.guardedTools = config.getGuardedTools().isEmpty()
+        ToolGuardConfig safeConfig = config != null ? config : new ToolGuardConfig();
+        this.guardians = new ArrayList<>(guardians != null ? guardians : List.of());
+        this.enabled = safeConfig.isEnabled();
+        this.deniedTools = new HashSet<>(safeConfig.getDeniedTools());
+        this.guardedTools = safeConfig.getGuardedTools().isEmpty()
                 ? null
-                : new HashSet<>(config.getGuardedTools());
+                : new HashSet<>(safeConfig.getGuardedTools());
         log.info("ToolGuardEngine initialized: enabled={}, guardians={}, deniedTools={}",
                 enabled, getGuardianNames(), deniedTools);
     }
-
-    // ------------------------------------------------------------------
-    // Registration
-    // ------------------------------------------------------------------
 
     public void registerGuardian(ToolGuardian guardian) {
         guardians.add(guardian);
@@ -54,34 +53,42 @@ public class ToolGuardEngine {
         return guardians.stream().map(ToolGuardian::getName).toList();
     }
 
-    // ------------------------------------------------------------------
-    // Core interface
-    // ------------------------------------------------------------------
-
     /**
      * Guard a tool call.
      *
-     * @param toolName     name of the tool being called
-     * @param params       tool arguments
+     * @param toolName name of the tool being called
+     * @param params tool arguments
      * @param onlyAlwaysRun if true, only run guardians with alwaysRun=true
      * @return ToolGuardResult, or null if guarding is disabled
      */
-    public ToolGuardResult guard(String toolName, Map<String, Object> params,
-                                  boolean onlyAlwaysRun) {
+    public ToolGuardResult guard(String toolName, Map<String, Object> params, boolean onlyAlwaysRun) {
         if (!enabled) {
             return null;
         }
 
         long t0 = System.nanoTime();
-        ToolGuardResult result = new ToolGuardResult(toolName, params);
+        ToolGuardResult result = new ToolGuardResult(toolName, params != null ? params : Map.of());
 
-        List<ToolGuardian> activeGuardians = onlyAlwaysRun
-                ? guardians.stream().filter(ToolGuardian::isAlwaysRun).toList()
-                : guardians;
+        if (isDenied(toolName)) {
+            result.getFindings().add(GuardFinding.builder()
+                    .toolName(toolName)
+                    .ruleId("tool-denied-list")
+                    .severity(GuardSeverity.CRITICAL)
+                    .description("Tool is denied by workspace tool_guard configuration: " + toolName)
+                    .requiresApproval(false)
+                    .threatCategory("tool-denied")
+                    .build());
+        }
+
+        List<ToolGuardian> activeGuardians = guardians.stream()
+                .filter(guardian -> onlyAlwaysRun
+                        ? guardian.isAlwaysRun()
+                        : isGuarded(toolName) || guardian.isAlwaysRun())
+                .toList();
 
         for (ToolGuardian guardian : activeGuardians) {
             try {
-                List<GuardFinding> findings = guardian.guard(toolName, params);
+                List<GuardFinding> findings = guardian.guard(toolName, params != null ? params : Map.of());
                 result.getFindings().addAll(findings);
                 result.getGuardiansUsed().add(guardian.getName());
             } catch (Exception ex) {
@@ -119,6 +126,11 @@ public class ToolGuardEngine {
         log.info("Tool guard rules reloaded");
     }
 
-    public boolean isEnabled() { return enabled; }
-    public void setEnabled(boolean enabled) { this.enabled = enabled; }
+    public boolean isEnabled() {
+        return enabled;
+    }
+
+    public void setEnabled(boolean enabled) {
+        this.enabled = enabled;
+    }
 }

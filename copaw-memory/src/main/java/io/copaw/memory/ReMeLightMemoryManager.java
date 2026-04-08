@@ -47,6 +47,11 @@ public class ReMeLightMemoryManager implements MemoryManager {
     }
 
     @Override
+    public List<Message> getAll() {
+        return Collections.unmodifiableList(messages);
+    }
+
+    @Override
     public List<Message> getContextWindow(int maxTokens) {
         if (messages.isEmpty()) return Collections.emptyList();
 

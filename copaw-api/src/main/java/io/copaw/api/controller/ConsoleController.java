@@ -6,16 +6,18 @@ import io.copaw.workspace.Workspace;
 import lombok.Data;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -25,10 +27,11 @@ import java.util.regex.Pattern;
  * Maps to Python: app/routers/console.py
  *
  * Endpoints:
- *   POST /console/chat           - SSE streaming chat
- *   POST /console/chat/stop      - Stop active chat
- *   POST /console/upload         - Upload file for chat
- *   GET  /console/push-messages  - Pending push messages
+ *   POST /console/chat                        - SSE streaming chat
+ *   POST /console/chat/stop                   - Stop active chat
+ *   POST /console/upload                      - Upload file for chat
+ *   GET  /console/push-messages               - Pending push messages
+ *   POST /console/approvals/{id}/resolve      - Resolve tool approval
  */
 @RestController
 @RequestMapping("/console")
@@ -40,6 +43,22 @@ public class ConsoleController {
     private static final long MAX_UPLOAD_BYTES = 10L * 1024 * 1024; // 10 MB
     private static final Pattern SAFE_FILENAME =
             Pattern.compile("[^\\w.\\-]");
+
+    // ------------------------------------------------------------------
+    // GET /console/messages - session message history for UI display
+    // ------------------------------------------------------------------
+
+    @GetMapping("/messages")
+    public Map<String, Object> getMessages(
+            @RequestParam("agentId") String agentId) {
+        Workspace workspace = multiAgentManager.getOrCreate(agentId);
+        var msgs = workspace.getRunner().getMessages();
+        var result = msgs.stream().map(m -> Map.<String, Object>of(
+                "role", m.role(),
+                "content", m.content() != null ? m.content() : ""
+        )).collect(java.util.stream.Collectors.toList());
+        return Map.of("messages", result, "total", result.size());
+    }
 
     // ------------------------------------------------------------------
     // POST /console/chat - SSE streaming
@@ -60,7 +79,7 @@ public class ConsoleController {
     @PostMapping(value = "/chat",
                  produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> chat(
-            @RequestParam String agentId,
+            @RequestParam("agentId") String agentId,
             @RequestBody ChatRequest request) {
 
         Workspace workspace = multiAgentManager.getOrCreate(agentId);
@@ -80,7 +99,8 @@ public class ConsoleController {
                 "session_id", request.getSessionId() != null ? request.getSessionId() : chatId,
                 "user_id", request.getUserId() != null ? request.getUserId() : "default",
                 "channel", "console",
-                "agent_id", agentId
+                "agent_id", agentId,
+                "chat_id", chatId
         );
 
         log.debug("Starting chat stream: agentId={}, chatId={}", agentId, chatId);
@@ -93,8 +113,8 @@ public class ConsoleController {
 
     @PostMapping("/chat/stop")
     public Map<String, Object> stopChat(
-            @RequestParam String agentId,
-            @RequestParam String chatId) {
+            @RequestParam("agentId") String agentId,
+            @RequestParam("chatId") String chatId) {
 
         Workspace workspace = multiAgentManager.getOrCreate(agentId);
         boolean stopped = workspace.getRunner().requestStop(chatId);
@@ -107,7 +127,7 @@ public class ConsoleController {
 
     @PostMapping("/upload")
     public Map<String, Object> uploadFile(
-            @RequestParam String agentId,
+            @RequestParam("agentId") String agentId,
             @RequestParam("file") MultipartFile file) throws IOException {
 
         Workspace workspace = multiAgentManager.getOrCreate(agentId);
@@ -144,9 +164,47 @@ public class ConsoleController {
 
     @GetMapping("/push-messages")
     public Map<String, Object> getPushMessages(
-            @RequestParam(required = false) String sessionId) {
-        // TODO: wire to a push message store
-        return Map.of("messages", java.util.Collections.emptyList());
+            @RequestParam("agentId") String agentId,
+            @RequestParam(name = "sessionId", required = false) String sessionId) {
+        Workspace workspace = multiAgentManager.getOrCreate(agentId);
+        List<?> messages = workspace.getPushMessageStore().drain(sessionId);
+        return Map.of(
+                "messages", messages,
+                "message_count", messages.size(),
+                "session_id", sessionId != null ? sessionId : "_all"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // POST /console/approvals/{approvalId}/resolve
+    // ------------------------------------------------------------------
+
+    @PostMapping("/approvals/{approvalId}/resolve")
+    @ResponseStatus(HttpStatus.OK)
+    public Map<String, Object> resolveApproval(
+            @RequestParam("agentId") String agentId,
+            @PathVariable("approvalId") String approvalId,
+            @RequestBody ResolveApprovalRequest request) {
+        if (request == null || request.getApproved() == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "approved is required");
+        }
+
+        Workspace workspace = multiAgentManager.getOrCreate(agentId);
+        boolean resolved = workspace.getApprovalService().resolve(
+                approvalId,
+                request.getApproved(),
+                request.getResponder(),
+                request.getNote()
+        );
+        if (!resolved) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Approval not found: " + approvalId);
+        }
+
+        return Map.of(
+                "resolved", true,
+                "approval_id", approvalId,
+                "approved", request.getApproved()
+        );
     }
 
     // ------------------------------------------------------------------
@@ -161,5 +219,12 @@ public class ConsoleController {
         private String userId;
         private Boolean reconnect;
         private String channel;
+    }
+
+    @Data
+    public static class ResolveApprovalRequest {
+        private Boolean approved;
+        private String responder;
+        private String note;
     }
 }

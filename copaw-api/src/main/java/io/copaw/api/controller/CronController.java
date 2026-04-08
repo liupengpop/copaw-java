@@ -34,15 +34,15 @@ public class CronController {
     private final MultiAgentManager multiAgentManager;
 
     @GetMapping
-    public Map<String, Object> listJobs(@RequestParam String agentId) {
+    public Map<String, Object> listJobs(@RequestParam("agentId") String agentId) {
         CronManager mgr = getCronManager(agentId);
         List<CronJobSpec> jobs = mgr.listAll();
         return Map.of("jobs", jobs, "total", jobs.size());
     }
 
     @PostMapping
-    public Map<String, Object> createOrUpdateJob(@RequestParam String agentId,
-                                                   @RequestBody CronJobSpec job) {
+    public Map<String, Object> createOrUpdateJob(@RequestParam("agentId") String agentId,
+                                                 @RequestBody CronJobSpec job) {
         job.setAgentId(agentId);
         CronManager mgr = getCronManager(agentId);
         try {
@@ -54,8 +54,8 @@ public class CronController {
     }
 
     @DeleteMapping("/{id}")
-    public Map<String, Object> deleteJob(@RequestParam String agentId,
-                                          @PathVariable("id") String jobId) {
+    public Map<String, Object> deleteJob(@RequestParam("agentId") String agentId,
+                                         @PathVariable("id") String jobId) {
         CronManager mgr = getCronManager(agentId);
         boolean deleted = mgr.delete(jobId);
         if (!deleted) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found: " + jobId);
@@ -63,8 +63,8 @@ public class CronController {
     }
 
     @PostMapping("/{id}/pause")
-    public Map<String, Object> pauseJob(@RequestParam String agentId,
-                                         @PathVariable("id") String jobId) {
+    public Map<String, Object> pauseJob(@RequestParam("agentId") String agentId,
+                                        @PathVariable("id") String jobId) {
         CronManager mgr = getCronManager(agentId);
         boolean ok = mgr.pause(jobId);
         if (!ok) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found: " + jobId);
@@ -72,8 +72,8 @@ public class CronController {
     }
 
     @PostMapping("/{id}/resume")
-    public Map<String, Object> resumeJob(@RequestParam String agentId,
-                                          @PathVariable("id") String jobId) {
+    public Map<String, Object> resumeJob(@RequestParam("agentId") String agentId,
+                                         @PathVariable("id") String jobId) {
         CronManager mgr = getCronManager(agentId);
         boolean ok = mgr.resume(jobId);
         if (!ok) throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Job not found: " + jobId);
@@ -81,8 +81,8 @@ public class CronController {
     }
 
     @PostMapping("/{id}/run")
-    public Map<String, Object> runNow(@RequestParam String agentId,
-                                       @PathVariable("id") String jobId) {
+    public Map<String, Object> runNow(@RequestParam("agentId") String agentId,
+                                      @PathVariable("id") String jobId) {
         CronManager mgr = getCronManager(agentId);
         mgr.runNow(jobId);
         return Map.of("triggered", true, "id", jobId);

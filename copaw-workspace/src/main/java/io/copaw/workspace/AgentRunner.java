@@ -4,13 +4,17 @@ import io.agentscope.core.ReActAgent;
 import io.agentscope.core.memory.InMemoryMemory;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.MsgRole;
+import io.agentscope.core.message.ThinkingBlock;
+import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.AnthropicChatModel;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.OllamaChatModel;
 import io.agentscope.core.model.OpenAIChatModel;
+import io.agentscope.core.model.exception.RateLimitException;
 import io.agentscope.core.model.ollama.OllamaOptions;
 import io.agentscope.core.tool.Toolkit;
+import io.agentscope.core.tool.mcp.McpClientWrapper;
 import io.copaw.common.config.AgentProfileConfig;
 import io.copaw.common.config.ModelSlotConfig;
 import io.copaw.memory.MemoryManager;
@@ -29,6 +33,7 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.Collectors;
 
 /**
  * Agent runner - processes incoming messages and returns streaming SSE responses.
@@ -58,6 +63,8 @@ public class AgentRunner {
     private final MemoryManager memoryManager;
     private final McpClientManager mcpClientManager;
     private final SkillService skillService;
+    private final WorkspaceTools workspaceTools;
+    private final ChatSessionStore chatSessionStore;
 
     /** active chat_id -> SSE sink */
     private final Map<String, Sinks.Many<String>> activeSinks = new ConcurrentHashMap<>();
@@ -72,13 +79,17 @@ public class AgentRunner {
                        AgentProfileConfig config,
                        MemoryManager memoryManager,
                        McpClientManager mcpClientManager,
-                       SkillService skillService) {
+                       SkillService skillService,
+                       WorkspaceTools workspaceTools,
+                       ChatSessionStore chatSessionStore) {
         this.agentId = agentId;
         this.workspaceDir = workspaceDir;
         this.config = config;
         this.memoryManager = memoryManager;
         this.mcpClientManager = mcpClientManager;
         this.skillService = skillService;
+        this.workspaceTools = workspaceTools;
+        this.chatSessionStore = chatSessionStore;
     }
 
     public void start() {
@@ -155,6 +166,12 @@ public class AgentRunner {
         activeSinks.put(chatId, sink);
         stopFlags.put(chatId, stopFlag);
 
+        String sessionId = firstNonBlank(context != null ? context.get("session_id") : null, chatId);
+        String userId = firstNonBlank(context != null ? context.get("user_id") : null, "default");
+        String channel = firstNonBlank(context != null ? context.get("channel") : null, "console");
+
+        persistChatMessage(sessionId, userId, channel, "user", message);
+
         // Add user message to memory
         memoryManager.addMessage(MemoryManager.Message.user(message));
 
@@ -179,6 +196,16 @@ public class AgentRunner {
                     activeSinks.remove(chatId);
                     stopFlags.remove(chatId);
                 });
+    }
+
+    /**
+     * Get all messages currently in memory for this agent (for UI session history display).
+     * Filters out system messages; returns only user/assistant turns.
+     */
+    public List<io.copaw.memory.MemoryManager.Message> getMessages() {
+        return memoryManager.getAll().stream()
+                .filter(m -> "user".equals(m.role()) || "assistant".equals(m.role()))
+                .collect(Collectors.toList());
     }
 
     /**
@@ -250,18 +277,41 @@ public class AgentRunner {
                 throw new IllegalStateException("Agent returned null response");
             }
 
-            String response = normalizeAgentText(responseMsg);
-            emitResponseChunks(response, sink, stopFlag);
+            String response = normalizeAgentText(chatId, responseMsg);
+            if (hasText(response)) {
+                emitResponseChunks(response, sink, stopFlag);
+            } else {
+                // Empty response (e.g. thinking-only turn) — emit a placeholder so the
+                // frontend doesn't spin waiting for content.
+                log.debug("Agent {} produced empty text for chat {} — emitting placeholder", agentId, chatId);
+                sink.tryEmitNext(formatSseEvent("delta", escapeJson("（Agent 思考完毕，无文本输出）")));
+            }
 
             if (stopFlag.get()) {
                 sink.tryEmitNext(formatSseEvent("stop", "{}"));
                 return;
             }
 
-            memoryManager.addMessage(MemoryManager.Message.assistant(response));
+            String finalResponse = hasText(response) ? response : "（Agent 思考完毕，无文本输出）";
+            persistChatMessage(
+                    firstNonBlank(context != null ? context.get("session_id") : null, chatId),
+                    firstNonBlank(context != null ? context.get("user_id") : null, "default"),
+                    firstNonBlank(context != null ? context.get("channel") : null, "console"),
+                    "assistant",
+                    finalResponse
+            );
+            if (hasText(response)) {
+                memoryManager.addMessage(MemoryManager.Message.assistant(response));
+            }
             sink.tryEmitNext(formatSseEvent("done", "{}"));
             log.debug("Agent {} finished chat {}", agentId, chatId);
 
+        } catch (RateLimitException e) {
+            // 429 from upstream — transient, no need for full stacktrace
+            log.warn("Agent {} rate-limited in chat {} (provider: {}): {}",
+                    agentId, chatId, extractProvider(e.getMessage()), e.getMessage());
+            sink.tryEmitNext(formatSseEvent("error",
+                    "{\"error\":" + escapeJson("模型调用被限速（429），请稍后重试") + "}"));
         } catch (Exception e) {
             log.error("Agent {} error in chat {}: {}", agentId, chatId, e.getMessage(), e);
             sink.tryEmitNext(formatSseEvent("error",
@@ -271,9 +321,21 @@ public class AgentRunner {
         }
     }
 
+    /** Extract provider name from a rate-limit error message for cleaner logging. */
+    private String extractProvider(String message) {
+        if (message == null) return "unknown";
+        // message contains "provider_name":"XYZ"
+        int idx = message.indexOf("\"provider_name\":\"");
+        if (idx < 0) return "unknown";
+        int start = idx + 17;
+        int end = message.indexOf('"', start);
+        return end > start ? message.substring(start, end) : "unknown";
+    }
+
     private ReActAgent buildAgent() {
         Model model = buildModel();
         Toolkit toolkit = new Toolkit();
+        registerToolkitResources(toolkit);
 
         return ReActAgent.builder()
                 .name(firstNonBlank(config.getName(), agentId))
@@ -284,6 +346,18 @@ public class AgentRunner {
                 .memory(new InMemoryMemory())
                 .maxIters(config.getRunning() != null ? config.getRunning().getMaxIters() : 30)
                 .build();
+    }
+
+    private void registerToolkitResources(Toolkit toolkit) {
+        if (workspaceTools != null) {
+            toolkit.registerTool(workspaceTools);
+        }
+        if (mcpClientManager == null) {
+            return;
+        }
+        for (McpClientWrapper client : mcpClientManager.listClients()) {
+            toolkit.registerMcpClient(client).block();
+        }
     }
 
     private Model buildModel() {
@@ -435,12 +509,49 @@ public class AgentRunner {
         }
     }
 
-    private String normalizeAgentText(Msg responseMsg) {
+    private String normalizeAgentText(String chatId, Msg responseMsg) {
+        // 1. Best case: getTextContent() already extracts TextBlock text
         String text = responseMsg.getTextContent();
         if (hasText(text)) {
             return text;
         }
+
+        // 2. Fallback: collect text from non-tool, non-thinking blocks
+        //    ThinkingBlock = Anthropic extended-thinking internal monologue, never show to users.
+        //    ToolUseBlock  = tool invocation, not displayable text.
+        String fallback = responseMsg.getContent().stream()
+                .filter(block -> !(block instanceof ToolUseBlock))
+                .filter(block -> !(block instanceof ThinkingBlock))
+                .map(String::valueOf)
+                .filter(this::hasText)
+                .collect(Collectors.joining("\n"));
+        if (hasText(fallback)) {
+            log.debug("Agent {} resolved text from non-TextBlock content for chat {}: blockTypes={}",
+                    agentId, chatId, describeContentBlocks(responseMsg));
+            return fallback;
+        }
+
+        // 3. Only thinking blocks and/or tool-use blocks — agent is mid-ReAct loop or thinking-only turn.
+        //    This is normal for extended-thinking models; the caller (runAgentAndEmit) should just
+        //    get an empty/stub response. Log at DEBUG to avoid noise.
+        boolean hasOnlyThinkingOrTool = responseMsg.getContent().stream()
+                .allMatch(block -> block instanceof ThinkingBlock || block instanceof ToolUseBlock);
+        if (hasOnlyThinkingOrTool && !responseMsg.getContent().isEmpty()) {
+            log.debug("Agent {} produced only thinking/tool blocks for chat {} (blockTypes={}); "
+                    + "returning empty — agent likely completed via tool loop.",
+                    agentId, chatId, describeContentBlocks(responseMsg));
+            return "";
+        }
+
+        log.warn("Agent {} returned empty content for chat {}: blockTypes={}",
+                agentId, chatId, describeContentBlocks(responseMsg));
         return "[Agent returned empty response]";
+    }
+
+    private String describeContentBlocks(Msg responseMsg) {
+        return responseMsg.getContent().stream()
+                .map(block -> block.getClass().getSimpleName())
+                .collect(Collectors.joining(", ", "[", "]"));
     }
 
     private String buildSystemPrompt() {
@@ -499,6 +610,28 @@ public class AgentRunner {
             }
         }
         return null;
+    }
+
+    private void persistChatMessage(String sessionId, String userId, String channel, String role, String content) {
+        if (chatSessionStore == null || !hasText(role)) {
+            return;
+        }
+        String normalizedChannel = firstNonBlank(channel, "console");
+        if (!hasText(normalizedChannel) || normalizedChannel.startsWith("_")) {
+            return;
+        }
+        try {
+            chatSessionStore.appendMessage(
+                    firstNonBlank(sessionId, UUID.randomUUID().toString()),
+                    firstNonBlank(userId, "default"),
+                    normalizedChannel,
+                    role,
+                    content
+            );
+        } catch (Exception e) {
+            log.warn("Persisting chat message failed for agent {} (session={}, channel={}): {}",
+                    agentId, sessionId, normalizedChannel, e.getMessage());
+        }
     }
 
     private Flux<String> handleSystemCommand(String chatId, String command) {

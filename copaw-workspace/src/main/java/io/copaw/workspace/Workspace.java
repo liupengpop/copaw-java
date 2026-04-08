@@ -2,6 +2,9 @@ package io.copaw.workspace;
 
 import io.copaw.common.config.AgentConfigLoader;
 import io.copaw.common.config.AgentProfileConfig;
+import io.copaw.core.security.FilePathToolGuardian;
+import io.copaw.core.security.RuleBasedToolGuardian;
+import io.copaw.core.security.ToolGuardEngine;
 import io.copaw.cron.CronManager;
 import io.copaw.memory.MemoryManager;
 import io.copaw.memory.ReMeLightMemoryManager;
@@ -11,6 +14,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.TaskScheduler;
 
 import java.nio.file.Path;
+import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
@@ -42,6 +46,10 @@ public class Workspace {
     @Getter private McpClientManager mcpClientManager;
     @Getter private SkillService skillService;
     @Getter private CronManager cronManager;
+    @Getter private ToolGuardEngine toolGuardEngine;
+    @Getter private ApprovalService approvalService;
+    @Getter private ConsolePushMessageStore pushMessageStore;
+    @Getter private ChatSessionStore chatSessionStore;
 
     private volatile boolean started = false;
 
@@ -75,19 +83,38 @@ public class Workspace {
         );
         memoryManager.start();
 
-        // 3. Initialize MCP client manager
+        // 3. Initialize workspace-scoped tool guard and approval services
+        pushMessageStore = new ConsolePushMessageStore();
+        approvalService = new ApprovalService(pushMessageStore);
+        toolGuardEngine = new ToolGuardEngine(
+                config.getToolGuard(),
+                List.of(
+                        new FilePathToolGuardian(),
+                        new RuleBasedToolGuardian(config.getToolGuard())
+                )
+        );
+        chatSessionStore = new ChatSessionStore(workspaceDir);
+
+        // 4. Initialize MCP client manager
         mcpClientManager = new McpClientManager(config.getMcpClients());
         mcpClientManager.start();
 
-        // 4. Initialize skill service (scan workspace skills)
+        // 5. Initialize skill service (scan workspace skills)
         skillService = new SkillService();
 
-        // 5. Initialize agent runner
+        // 6. Initialize agent runner with workspace tools + MCP
+        WorkspaceTools workspaceTools = new WorkspaceTools(
+                agentId,
+                workspaceDir,
+                memoryManager,
+                toolGuardEngine,
+                approvalService
+        );
         runner = new AgentRunner(agentId, workspaceDir, config, memoryManager,
-                mcpClientManager, skillService);
+                mcpClientManager, skillService, workspaceTools, chatSessionStore);
         runner.start();
 
-        // 6. Initialize cron manager after runner is ready
+        // 7. Initialize cron manager after runner is ready
         cronManager = new CronManager(
                 taskScheduler,
                 workspaceDir,
@@ -111,6 +138,9 @@ public class Workspace {
         if (!started) return;
         log.info("Stopping workspace: {}", agentId);
 
+        if (approvalService != null) {
+            approvalService.cancelAll("workspace stopped");
+        }
         if (cronManager != null) cronManager.stop();
         if (runner != null) runner.stop();
         if (mcpClientManager != null) mcpClientManager.stop();

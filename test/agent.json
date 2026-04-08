@@ -1,0 +1,59 @@
+{
+  "id" : "228114",
+  "name" : "测试",
+  "description" : "测试",
+  "workspace_dir" : "test",
+  "language" : "en",
+  "enabled" : true,
+  "active_model" : null,
+  "memory" : {
+    "backend" : "remelight",
+    "context_token_limit" : 8000,
+    "compact_threshold" : 0.85,
+    "auto_compact" : true,
+    "summary_enabled" : true,
+    "summary_max_tokens" : 2000,
+    "semantic_search_enabled" : false,
+    "embedding_model" : null,
+    "embedding_dimension" : 1536
+  },
+  "running" : {
+    "max_iters" : 30,
+    "max_input_length" : 50000,
+    "memory_compact_threshold" : 0,
+    "max_concurrent_llm" : 5,
+    "llm_max_retries" : 3,
+    "llm_acquire_timeout" : 30
+  },
+  "mcp_clients" : [ ],
+  "console" : {
+    "enabled" : true,
+    "bot_prefix" : "",
+    "filter_tool_messages" : false,
+    "filter_thinking" : false,
+    "dm_policy" : "open",
+    "group_policy" : "open",
+    "allow_from" : [ ],
+    "deny_message" : "",
+    "require_mention" : false,
+    "media_dir" : null
+  },
+  "telegram" : null,
+  "dingtalk" : null,
+  "feishu" : null,
+  "wecom" : null,
+  "discord" : null,
+  "mqtt" : null,
+  "onebot" : null,
+  "tool_guard" : {
+    "enabled" : true,
+    "denied_tools" : [ ],
+    "guarded_tools" : [ ],
+    "rules" : [ ]
+  },
+  "heartbeat" : {
+    "enabled" : false,
+    "every" : "1h",
+    "target" : "heartbeat"
+  }
+}
