@@ -104,14 +104,14 @@ copaw-java/
 ### 编译后端
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java
+cd copaw/copaw-java
 mvn -DskipTests compile
 ```
 
 如果要完整打包：
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java
+cd copaw/copaw-java
 mvn clean package -DskipTests
 ```
 
@@ -120,14 +120,14 @@ mvn clean package -DskipTests
 开发模式常用启动方式：
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java
+cd copaw/copaw-java
 mvn spring-boot:run -pl copaw-app -Dspring-boot.run.arguments="--spring.profiles.active=dev"
 ```
 
 如果你要显式指定工作目录：
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java
+cd copaw/copaw-java
 mvn spring-boot:run -pl copaw-app -Dspring-boot.run.arguments="--copaw.working-dir=/path/to/your/copaw/workspace"
 ```
 
@@ -145,7 +145,7 @@ mvn spring-boot:run -pl copaw-app -Dspring-boot.run.arguments="--copaw.working-d
 启动方式：
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java/copaw-frontend
+cd copaw/copaw-java/copaw-frontend
 npm install
 npm run serve
 ```
@@ -159,14 +159,14 @@ http://localhost:18081
 默认情况下，开发模式会把 `/api` 代理到 `http://localhost:8080`。如果后端端口不同，可以这样运行：
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java/copaw-frontend
+cd copaw/copaw-java/copaw-frontend
 VUE_APP_API_TARGET=http://localhost:8081 npm run serve
 ```
 
 前端构建验证命令：
 
 ```bash
-cd /Users/lmax/WorkBuddy/workbuddy/copaw/copaw-java/copaw-frontend
+cd copaw/copaw-java/copaw-frontend
 npm run build
 ```
 
